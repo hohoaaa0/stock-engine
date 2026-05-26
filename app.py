@@ -1,3 +1,13 @@
+# --- 🚨 긴급 처방: Streamlit 서버가 setuptools를 무시할 때 런타임에 강제로 설치 ---
+import subprocess
+import sys
+try:
+    import pkg_resources
+except ImportError:
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "setuptools"])
+# -------------------------------------------------------------------------
+
+
 import streamlit as st
 import pandas as pd
 from pykrx import stock
