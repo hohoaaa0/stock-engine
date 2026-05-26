@@ -138,9 +138,12 @@ if analyze_btn or stock_code:
                 df_ohlcv['Price_Bin'] = pd.cut(df_ohlcv['Close'], bins=20)
                 volume_profile = df_ohlcv.groupby('Price_Bin', observed=True)['Volume'].sum().reset_index()
                 volume_profile['Vol_Pct'] = (volume_profile['Volume'] / total_volume) * 100
-                volume_profile['Bin_Center'] = volume_profile['Price_Bin'].apply(lambda x: x.mid)
-                volume_profile['Bin_Bottom'] = volume_profile['Price_Bin'].apply(lambda x: x.left)
-                volume_profile['Bin_Top'] = volume_profile['Price_Bin'].apply(lambda x: x.right)
+
+                # 🌟 [수정됨]: Pandas 버전에 따라 apply(lambda x: x.mid)가 에러를 발생시키는 것을 방지하기 위해, pd.IntervalIndex를 활용한 안전한 벡터화 추출 방식으로 수정
+                intervals = pd.IntervalIndex(volume_profile['Price_Bin'])
+                volume_profile['Bin_Center'] = intervals.mid.astype(float)
+                volume_profile['Bin_Bottom'] = intervals.left.astype(float)
+                volume_profile['Bin_Top'] = intervals.right.astype(float)
 
                 # 상방(현재가 위)과 하방(현재가 아래) 매물대 분리
                 # 🌟 [수정됨]: Bin_Center를 float(숫자)로 강제 변환하여 current_price와 비교
