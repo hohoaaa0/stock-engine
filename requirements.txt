@@ -3,3 +3,4 @@ pandas
 pykrx
 finance-datareader
 plotly
+setuptools
