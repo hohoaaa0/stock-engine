@@ -42,6 +42,11 @@ col1, col2 = st.columns([1, 4])
 
 with col1:
     user_input = st.text_input("종목명 또는 코드를 입력하세요", value="삼성전자")
+
+    # 🌟 [수정됨]: 사용자가 보조지표(RSI, Williams %R) 기간 수치를 직접 입력하고 조절할 수 있는 위젯 추가
+    rsi_period = st.number_input("RSI 기간 설정", min_value=2, max_value=100, value=14, step=1)
+    will_period = st.number_input("Williams %R 기간 설정", min_value=2, max_value=100, value=14, step=1)
+
     analyze_btn = st.button("분석 실행")
 
 end_date = datetime.now().strftime("%Y%m%d")
@@ -58,22 +63,33 @@ if analyze_btn or stock_code:
                 df_ohlcv = fdr.DataReader(stock_code, start_date, end_date)
 
                 # --- 🛠️ 수정됨: 실제 보조 지표 계산 로직 투입 ---
-                # RSI 계산 (14일)
+                # RSI 계산 (동적 기간 적용)
+                # 🌟 [수정됨]: 하드코딩된 14(com=13) 대신, 입력받은 rsi_period 수치를 반영하여 계산하도록 수정
                 delta = df_ohlcv['Close'].diff()
                 up = delta.clip(lower=0)
                 down = -1 * delta.clip(upper=0)
-                ema_up = up.ewm(com=13, adjust=False).mean()
-                ema_down = down.ewm(com=13, adjust=False).mean()
+                ema_up = up.ewm(com=rsi_period - 1, adjust=False).mean()
+                ema_down = down.ewm(com=rsi_period - 1, adjust=False).mean()
                 rs = ema_up / ema_down
                 df_ohlcv['RSI'] = 100 - (100 / (1 + rs))
 
-                # Williams %R 계산 (14일)
-                hh = df_ohlcv['High'].rolling(window=14).max()
-                ll = df_ohlcv['Low'].rolling(window=14).min()
+                # Williams %R 계산 (동적 기간 적용)
+                # 🌟 [수정됨]: 하드코딩된 14 대신, 입력받은 will_period 수치를 반영하여 계산하도록 수정
+                hh = df_ohlcv['High'].rolling(window=will_period).max()
+                ll = df_ohlcv['Low'].rolling(window=will_period).min()
                 df_ohlcv['Williams_R'] = (hh - df_ohlcv['Close']) / (hh - ll) * -100
 
                 # 2. 수급 데이터 (pykrx)
                 df_investor_raw = stock.get_market_trading_value_by_date(start_date, end_date, stock_code)
+
+                # 🌟 [수정됨]: pykrx 업데이트로 인해 '날짜'가 일반 컬럼(RangeIndex)으로 빠져나오는 에러를 완벽 방어하기 위한 인덱스 강제 복구 및 타입 캐스팅 로직 추가
+                if '날짜' in df_investor_raw.columns:
+                    df_investor_raw = df_investor_raw.set_index('날짜')
+                elif 'Date' in df_investor_raw.columns:
+                    df_investor_raw = df_investor_raw.set_index('Date')
+
+                # 안전한 날짜 타입 캐스팅 (이후 strftime 호출 시 에러 방지용)
+                df_investor_raw.index = pd.to_datetime(df_investor_raw.index)
 
                 # --- 🛠️ 수정됨: '기관합계' 직접 계산 로직 투입 ---
                 inst_cols = ['금융투자', '보험', '투신', '사모', '은행', '기타금융', '연기금']
@@ -106,12 +122,16 @@ if analyze_btn or stock_code:
 
                 # 🌟 [수정됨]: fdr 일봉 데이터(Volume)와 pykrx 수급 데이터 병합(Merge) 및 전일 대비 연산
                 df_vol = df_ohlcv[['Volume']].copy()
+
+                # 🌟 [수정됨]: pykrx 인덱스와 완벽한 매칭을 위해 df_vol(fdr) 인덱스도 안전하게 DatetimeIndex로 강제 정렬
+                df_vol.index = pd.to_datetime(df_vol.index)
+
                 df_vol['Vol_Change_Pct'] = df_vol['Volume'].pct_change() * 100
 
                 # 날짜 인덱스 기준으로 병합 후 최근 10일 데이터 추출
                 df_merged = df_investor.join(df_vol, how='inner').tail(10)
 
-                # UI 표기를 위해 인덱스를 MM/DD 형식의 문자열로 변환
+                # UI 표기를 위해 인덱스를 MM/DD 형식의 문자열로 변환 (위의 pd.to_datetime 변환 덕분에 여기서 절대 에러가 나지 않음)
                 df_merged.index = df_merged.index.strftime('%m/%d')
 
                 # 🌟 [수정됨]: 거래량 텍스트(예: 1,500K (+80%)) 컬럼 생성
@@ -177,9 +197,11 @@ if analyze_btn or stock_code:
             st.markdown("---")
             st.markdown("### 2. 차트 분석 영역 (1일봉 및 매물대)")
 
+            # 🌟 [수정됨]: 서브타이틀에도 사용자가 입력한 동적 기간 수치(rsi_period, will_period)가 명시되도록 수정
             fig = make_subplots(rows=4, cols=1, shared_xaxes=True,
                                 vertical_spacing=0.03,
-                                subplot_titles=(f'{stock_name} 일봉', 'RSI (14)', 'Williams %R (14)', '거래량'),
+                                subplot_titles=(f'{stock_name} 일봉', f'RSI ({rsi_period})',
+                                                f'Williams %R ({will_period})', '거래량'),
                                 row_width=[0.2, 0.15, 0.15, 0.4])
 
             # 캔들차트
