@@ -3,4 +3,4 @@ pandas
 pykrx
 finance-datareader
 plotly
-setuptools==75.0.0
+setuptools

@@ -88,8 +88,8 @@ if analyze_btn or stock_code:
                 elif 'Date' in df_investor_raw.columns:
                     df_investor_raw = df_investor_raw.set_index('Date')
 
-                # 안전한 날짜 타입 캐스팅 (이후 strftime 호출 시 에러 방지용)
-                df_investor_raw.index = pd.to_datetime(df_investor_raw.index)
+                # 🌟 [수정됨]: 안전한 날짜 타입 캐스팅 및 미세한 시간 차이(00:00:00)로 인한 병합 누락(Out of bounds 에러 원인)을 방지하기 위해 .normalize() 적용
+                df_investor_raw.index = pd.to_datetime(df_investor_raw.index).normalize()
 
                 # --- 🛠️ 수정됨: '기관합계' 직접 계산 로직 투입 ---
                 inst_cols = ['금융투자', '보험', '투신', '사모', '은행', '기타금융', '연기금']
@@ -123,8 +123,8 @@ if analyze_btn or stock_code:
                 # 🌟 [수정됨]: fdr 일봉 데이터(Volume)와 pykrx 수급 데이터 병합(Merge) 및 전일 대비 연산
                 df_vol = df_ohlcv[['Volume']].copy()
 
-                # 🌟 [수정됨]: pykrx 인덱스와 완벽한 매칭을 위해 df_vol(fdr) 인덱스도 안전하게 DatetimeIndex로 강제 정렬
-                df_vol.index = pd.to_datetime(df_vol.index)
+                # 🌟 [수정됨]: pykrx 인덱스와 완벽한 매칭을 위해 df_vol(fdr) 인덱스도 안전하게 DatetimeIndex로 강제 정렬하고 시간 정보를 자름(.normalize())
+                df_vol.index = pd.to_datetime(df_vol.index).normalize()
 
                 df_vol['Vol_Change_Pct'] = df_vol['Volume'].pct_change() * 100
 
@@ -267,29 +267,34 @@ if analyze_btn or stock_code:
                 # 🌟 [수정됨]: 10일치 병합 데이터를 분석하여 브리핑 텍스트 동적 생성
                 st.markdown("#### 💡 종합 분석 요약 (Summary)")
 
-                total_days = len(df_merged)
-                foreign_buy_days = (df_merged['외국인'] > 0).sum() if '외국인' in df_merged.columns else 0
-
-                last_day_data = df_merged.iloc[-1]
-                last_date_str = df_merged.index[-1]
-                last_vol_change = last_day_data['Vol_Change_Pct']
-
-                is_yangmaesu = ('외국인' in df_merged.columns and last_day_data['외국인'] > 0) and (last_day_data['기관합계'] > 0)
-
-                dynamic_summary = f"**{stock_name}**는 최근 {total_days}거래일 중 {foreign_buy_days}일 동안 외국인 주도의 매집이 확인됩니다. "
-
-                if pd.notnull(last_vol_change) and last_vol_change >= 50 and is_yangmaesu:
-                    dynamic_summary += f"특히 {last_date_str}에는 거래량이 전일 대비 {last_vol_change:.0f}% 급증하며 외인/기관 양매수 패턴이 발생했습니다. "
-                elif is_yangmaesu:
-                    dynamic_summary += f"{last_date_str} 기준 외인/기관 양매수 패턴이 발생하여 긍정적인 수급이 확인됩니다. "
-                elif pd.notnull(last_vol_change) and last_vol_change >= 50:
-                    dynamic_summary += f"특히 {last_date_str}에는 거래량이 전일 대비 {last_vol_change:.0f}% 급증하며 의미 있는 변동성이 나타났습니다. "
+                # 🌟 [수정됨]: 병합된 데이터(df_merged)가 비어있을 경우 (조회 기간 불일치, 거래 정지 등) 에러가 터지지 않도록 방어 로직 추가
+                if df_merged.empty:
+                    st.warning("최근 수급 데이터와 일봉 데이터의 날짜가 일치하지 않거나, 최근 거래 데이터가 존재하지 않아 수급 요약을 제공할 수 없습니다.")
                 else:
-                    dynamic_summary += "최근 거래량의 급격한 폭발이나 뚜렷한 양매수 패턴은 관찰되지 않고 있습니다. "
+                    total_days = len(df_merged)
+                    foreign_buy_days = (df_merged['외국인'] > 0).sum() if '외국인' in df_merged.columns else 0
 
-                dynamic_summary += f"이는 {entry_price:,.0f}원의 지지 매물대를 지켜내려는 강한 수급 신호로 해석될 수 있으며, 목표가 {target_price:,.0f}원 달성 가능성을 높입니다."
+                    last_day_data = df_merged.iloc[-1]
+                    last_date_str = df_merged.index[-1]
+                    last_vol_change = last_day_data['Vol_Change_Pct']
 
-                st.info(dynamic_summary)
+                    is_yangmaesu = ('외국인' in df_merged.columns and last_day_data['외국인'] > 0) and (
+                                last_day_data['기관합계'] > 0)
+
+                    dynamic_summary = f"**{stock_name}**는 최근 {total_days}거래일 중 {foreign_buy_days}일 동안 외국인 주도의 매집이 확인됩니다. "
+
+                    if pd.notnull(last_vol_change) and last_vol_change >= 50 and is_yangmaesu:
+                        dynamic_summary += f"특히 {last_date_str}에는 거래량이 전일 대비 {last_vol_change:.0f}% 급증하며 외인/기관 양매수 패턴이 발생했습니다. "
+                    elif is_yangmaesu:
+                        dynamic_summary += f"{last_date_str} 기준 외인/기관 양매수 패턴이 발생하여 긍정적인 수급이 확인됩니다. "
+                    elif pd.notnull(last_vol_change) and last_vol_change >= 50:
+                        dynamic_summary += f"특히 {last_date_str}에는 거래량이 전일 대비 {last_vol_change:.0f}% 급증하며 의미 있는 변동성이 나타났습니다. "
+                    else:
+                        dynamic_summary += "최근 거래량의 급격한 폭발이나 뚜렷한 양매수 패턴은 관찰되지 않고 있습니다. "
+
+                    dynamic_summary += f"이는 {entry_price:,.0f}원의 지지 매물대를 지켜내려는 강한 수급 신호로 해석될 수 있으며, 목표가 {target_price:,.0f}원 달성 가능성을 높입니다."
+
+                    st.info(dynamic_summary)
 
         except Exception as e:
             st.error(f"데이터를 불러오는 중 내부 오류가 발생했습니다: {e}")
