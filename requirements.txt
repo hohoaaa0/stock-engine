@@ -1,0 +1,5 @@
+streamlit
+pandas
+pykrx
+finance-datareader
+plotly
