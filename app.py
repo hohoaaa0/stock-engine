@@ -1,13 +1,3 @@
-# --- 🚨 긴급 처방: Streamlit 서버가 setuptools를 무시할 때 런타임에 강제로 설치 ---
-import subprocess
-import sys
-try:
-    import pkg_resources
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "setuptools"])
-# -------------------------------------------------------------------------
-
-
 import streamlit as st
 import pandas as pd
 from pykrx import stock
@@ -98,8 +88,8 @@ if analyze_btn or stock_code:
                 elif 'Date' in df_investor_raw.columns:
                     df_investor_raw = df_investor_raw.set_index('Date')
 
-                # 🌟 [수정됨]: 안전한 날짜 타입 캐스팅 및 미세한 시간 차이(00:00:00)로 인한 병합 누락(Out of bounds 에러 원인)을 방지하기 위해 .normalize() 적용
-                df_investor_raw.index = pd.to_datetime(df_investor_raw.index).normalize()
+                # 🌟 [수정됨]: 숨어있는 시간(타임존) 오차로 인해 교집합(Join)이 0개가 되는 것을 원천 차단하기 위해, 날짜 인덱스를 순수 문자열(YYYY-MM-DD)로 강제 변환합니다.
+                df_investor_raw.index = pd.to_datetime(df_investor_raw.index).strftime('%Y-%m-%d')
 
                 # --- 🛠️ 수정됨: '기관합계' 직접 계산 로직 투입 ---
                 inst_cols = ['금융투자', '보험', '투신', '사모', '은행', '기타금융', '연기금']
@@ -133,16 +123,16 @@ if analyze_btn or stock_code:
                 # 🌟 [수정됨]: fdr 일봉 데이터(Volume)와 pykrx 수급 데이터 병합(Merge) 및 전일 대비 연산
                 df_vol = df_ohlcv[['Volume']].copy()
 
-                # 🌟 [수정됨]: pykrx 인덱스와 완벽한 매칭을 위해 df_vol(fdr) 인덱스도 안전하게 DatetimeIndex로 강제 정렬하고 시간 정보를 자름(.normalize())
-                df_vol.index = pd.to_datetime(df_vol.index).normalize()
+                # 🌟 [수정됨]: df_investor와 100% 일치시키기 위해 fdr 데이터의 인덱스 역시 순수 문자열(YYYY-MM-DD)로 변환합니다. (이제 타임존 에러가 절대 발생하지 않습니다.)
+                df_vol.index = pd.to_datetime(df_vol.index).strftime('%Y-%m-%d')
 
                 df_vol['Vol_Change_Pct'] = df_vol['Volume'].pct_change() * 100
 
                 # 날짜 인덱스 기준으로 병합 후 최근 10일 데이터 추출
                 df_merged = df_investor.join(df_vol, how='inner').tail(10)
 
-                # UI 표기를 위해 인덱스를 MM/DD 형식의 문자열로 변환 (위의 pd.to_datetime 변환 덕분에 여기서 절대 에러가 나지 않음)
-                df_merged.index = df_merged.index.strftime('%m/%d')
+                # UI 표기를 위해 인덱스를 MM/DD 형식의 문자열로 변환 (기존 YYYY-MM-DD 문자열을 다시 날짜형으로 읽은 뒤 %m/%d로 변환)
+                df_merged.index = pd.to_datetime(df_merged.index).strftime('%m/%d')
 
                 # 🌟 [수정됨]: 거래량 텍스트(예: 1,500K (+80%)) 컬럼 생성
                 df_merged['당일 거래량 (추이)'] = df_merged.apply(
