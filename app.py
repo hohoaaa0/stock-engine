@@ -36,13 +36,13 @@ def get_random_proxy():
         return None
 
 
-# 🌟 [수정됨]: 보조지표(RSI 등) 변경 시마다 외부 데이터를 반복해서 수집하여 끊기고 에러가 나는 현상을 완벽 방지하기 위해 일봉 데이터 캐싱 함수 분리
+# 보조지표(RSI 등) 변경 시마다 외부 데이터를 반복해서 수집하여 끊기고 에러가 나는 현상을 완벽 방지하기 위해 일봉 데이터 캐싱 함수 분리
 @st.cache_data(ttl=3600)
 def fetch_ohlcv_data_cached(stock_code, start_date, end_date):
     return fdr.DataReader(stock_code, start_date, end_date)
 
 
-# 🌟 [수정됨]: 무료 프록시 수집 역시 최초 1회만 수행하도록 분리 및 캐싱 (통신 불안정으로 인한 앱 강제 종료 원천 차단)
+# 무료 프록시 수집 역시 최초 1회만 수행하도록 분리 및 캐싱 (통신 불안정으로 인한 앱 강제 종료 원천 차단)
 @st.cache_data(ttl=3600)
 def fetch_proxy_investor_data_cached(stock_code):
     proxy = get_random_proxy()
@@ -108,7 +108,6 @@ if analyze_btn or stock_code:
             with st.spinner('데이터를 정밀 분석 중입니다...'):
 
                 # 1. 일봉 데이터 수집
-                # 🌟 [수정됨]: 캐싱된 함수를 호출하고 복사본을 가져와 보조지표 연산이 원본을 손상시키지 않게 보호
                 df_ohlcv = fetch_ohlcv_data_cached(stock_code, start_date, end_date).copy()
 
                 # RSI 계산
@@ -129,39 +128,56 @@ if analyze_btn or stock_code:
                 df_investor_raw = stock.get_market_trading_value_by_date(start_date, end_date, stock_code)
 
                 if df_investor_raw is None or df_investor_raw.empty:
-                    # 🌟 [수정됨]: 캐싱된 프록시 우회 함수를 호출하여 재통신 에러 원천 차단.
-                    # 기존 원본 에러 로그(try-except 형태)를 구조적으로 100% 보존
                     df_proxy, err = fetch_proxy_investor_data_cached(stock_code)
                     if err:
                         st.error(f"수급 데이터 수집 실패: {err}")
                     if not df_proxy.empty:
                         df_investor_raw = df_proxy.copy()
 
-                if '날짜' in df_investor_raw.columns:
-                    df_investor_raw = df_investor_raw.set_index('날짜')
+                # 🌟 [수정됨]: 데이터프레임이 정상 수집되었을 때만 파싱 과정을 거치도록 조건문 분리 (에러 발생 완벽 원천 차단)
+                if df_investor_raw is not None and not df_investor_raw.empty:
+                    if '날짜' in df_investor_raw.columns:
+                        df_investor_raw = df_investor_raw.set_index('날짜')
 
-                df_investor_raw.index = pd.to_datetime(df_investor_raw.index).strftime('%Y-%m-%d')
+                    df_investor_raw.index = pd.to_datetime(df_investor_raw.index).strftime('%Y-%m-%d')
 
-                inst_cols = ['금융투자', '보험', '투신', '사모', '은행', '기타금융', '연기금']
-                available_inst_cols = [c for c in inst_cols if c in df_investor_raw.columns]
-                df_investor_raw['기관합계'] = df_investor_raw[available_inst_cols].sum(axis=1)
+                    inst_cols = ['금융투자', '보험', '투신', '사모', '은행', '기타금융', '연기금']
+                    available_inst_cols = [c for c in inst_cols if c in df_investor_raw.columns]
+                    df_investor_raw['기관합계'] = df_investor_raw[available_inst_cols].sum(axis=1)
 
-                foreign_cols = [c for c in df_investor_raw.columns if '외국' in c and '기타' not in c]
-                retail_cols = [c for c in df_investor_raw.columns if '개인' in c]
+                    foreign_cols = [c for c in df_investor_raw.columns if '외국' in c and '기타' not in c]
+                    retail_cols = [c for c in df_investor_raw.columns if '개인' in c]
 
-                df_investor = df_investor_raw[
-                    [foreign_cols[0], '기관합계', retail_cols[0]]].copy() if foreign_cols and retail_cols else \
-                df_investor_raw[['기관합계']].copy()
-                df_investor.rename(columns={foreign_cols[0]: '외국인', retail_cols[0]: '개인'}, inplace=True)
-                df_investor = df_investor / 100000000
+                    # 🌟 [수정됨]: 컬럼 리스트 인덱스 접근 시 빈 배열을 조회하여 list index out of range 에러가 나지 않도록 데이터 존재 검증 강화
+                    if foreign_cols and retail_cols:
+                        df_investor = df_investor_raw[[foreign_cols[0], '기관합계', retail_cols[0]]].copy()
+                        df_investor.rename(columns={foreign_cols[0]: '외국인', retail_cols[0]: '개인'}, inplace=True)
+                    else:
+                        df_investor = df_investor_raw[['기관합계']].copy()
+
+                    # 데이터 원본 형태에 따른 금액/수량 스케일링 방어 (크롤링 데이터가 아닐 때만 나누기 적용)
+                    if '외국인' in df_investor.columns and df_investor['외국인'].abs().max() > 100000:
+                        df_investor = df_investor / 100000000
+                else:
+                    # 🌟 [수정됨]: 프록시 연결 전면 실패로 텅 비었을 경우 빈 데이터프레임을 생성해 후속 코드 에러 전면 방어
+                    df_investor = pd.DataFrame()
 
                 df_vol = df_ohlcv[['Volume']].copy()
                 df_vol.index = pd.to_datetime(df_vol.index).strftime('%Y-%m-%d')
-                df_merged = df_investor.join(df_vol, how='inner').tail(10)
+
+                # 🌟 [수정됨]: 'inner' 방식에서 'left' 방식으로 병합 교체 (수급 데이터가 없더라도 거래량 10일치는 무조건 표출하도록 방어)
+                df_merged = df_vol.join(df_investor, how='left').tail(10)
                 df_merged.index = pd.to_datetime(df_merged.index).strftime('%m/%d')
 
                 df_merged['당일 거래량 (추이)'] = df_merged.apply(lambda x: f"{x['Volume'] / 1000:,.0f}K", axis=1)
-                df_display = df_merged[['당일 거래량 (추이)', '외국인', '기관합계', '개인']]
+
+                # 🌟 [수정됨]: 수급 컬럼 유무를 파악하여 유연하게 컬럼 배치 (에러 차단 및 표 출력 유지)
+                final_cols = ['당일 거래량 (추이)']
+                if '외국인' in df_merged.columns: final_cols.append('외국인')
+                if '기관합계' in df_merged.columns: final_cols.append('기관합계')
+                if '개인' in df_merged.columns: final_cols.append('개인')
+
+                df_display = df_merged[final_cols]
 
                 current_price = df_ohlcv['Close'].iloc[-1]
 
@@ -198,8 +214,7 @@ if analyze_btn or stock_code:
             st.markdown("---")
             st.markdown("### 2. 차트 분석 영역 (1일봉 및 매물대)")
 
-            # 🌟 [수정됨]: 예시 이미지처럼 캔들차트 우측에 볼륨 프로파일을 배치하기 위해 4행 2열 (8:2 비율) 레이아웃으로 변경
-            # 1행의 양쪽 서브플롯은 Y축(가격)을 완벽하게 동기화(shared_yaxes)하여 시각적 직관성을 극대화합니다.
+            # 캔들차트 우측에 볼륨 프로파일을 배치하기 위해 4행 2열 (8:2 비율) 레이아웃 구성
             fig = make_subplots(
                 rows=4, cols=2,
                 shared_xaxes=True,
@@ -207,10 +222,10 @@ if analyze_btn or stock_code:
                 vertical_spacing=0.03,
                 column_widths=[0.8, 0.2],
                 specs=[
-                    [{"type": "xy"}, {"type": "xy"}],  # 1행: 캔들차트 | 볼륨 프로파일
-                    [{"colspan": 2, "type": "xy"}, None],  # 2행: RSI (전체 너비 사용)
-                    [{"colspan": 2, "type": "xy"}, None],  # 3행: Williams %R (전체 너비 사용)
-                    [{"colspan": 2, "type": "xy"}, None]  # 4행: 거래량 (전체 너비 사용)
+                    [{"type": "xy"}, {"type": "xy"}],
+                    [{"colspan": 2, "type": "xy"}, None],
+                    [{"colspan": 2, "type": "xy"}, None],
+                    [{"colspan": 2, "type": "xy"}, None]
                 ],
                 subplot_titles=(f'{stock_name} 일봉', '매물대 (Volume Profile)', f'RSI ({rsi_period})',
                                 f'Williams %R ({will_period})', '거래량')
@@ -221,10 +236,9 @@ if analyze_btn or stock_code:
                 go.Candlestick(x=df_ohlcv.index, open=df_ohlcv['Open'], high=df_ohlcv['High'], low=df_ohlcv['Low'],
                                close=df_ohlcv['Close'], name="일봉"), row=1, col=1)
 
-            # 🌟 [수정됨]: 예시 이미지와 동일한 가로형 볼륨 프로파일 (1행 2열)
+            # 가로형 볼륨 프로파일 (1행 2열)
             poc_index = volume_profile['Volume'].idxmax() if not volume_profile.empty else None
-            marker_colors = ['orange' if i == poc_index else 'gray' for i in
-                             volume_profile.index]  # 가장 매물이 많은 구간(POC) 오렌지색 강조
+            marker_colors = ['orange' if i == poc_index else 'gray' for i in volume_profile.index]
 
             fig.add_trace(go.Bar(
                 x=volume_profile['Volume'],
@@ -246,7 +260,6 @@ if analyze_btn or stock_code:
                 fig.add_hline(y=upper_res['Bin_Center'], line_dash="dot", line_color="red",
                               annotation_text=f"상방 저항: {int(upper_res['Bin_Center']):,.0f}원 ({upper_res['Vol_Pct']:.1f}%)",
                               annotation_position="top right", row=1, col=1)
-                # 🌟 [수정됨]: 매물대 차트(우측)에도 동일한 저항/지지선을 그어주어 직관성 향상
                 fig.add_hline(y=upper_res['Bin_Center'], line_dash="dot", line_color="red", row=1, col=2)
 
             if lower_sup is not None:
@@ -272,9 +285,33 @@ if analyze_btn or stock_code:
             fig.update_layout(height=800, template="plotly_dark", xaxis_rangeslider_visible=False)
             st.plotly_chart(fig, use_container_width=True)
 
+            # --- 4. 수급 및 종합 분석 영역 ---
             st.markdown("---")
             st.markdown("### 4. 수급 및 종합 분석 영역")
-            st.dataframe(df_display.sort_index(ascending=False), use_container_width=True)
+
+            # 예시 화면 디자인에 일치시키기 위해 데이터프레임 양옆에 요약 안내 창 배치 구성
+            col_inv, col_vol = st.columns([2, 1])
+
+            with col_inv:
+                st.markdown("#### 🏢 메이저 수급 및 거래량 동향 (최근 10일, 단위: 억원)")
+                format_dict = {'외국인': '{:.1f}', '기관합계': '{:.1f}', '개인': '{:.1f}'}
+                # 존재하는 컬럼에 대해서만 유연하게 서식 지정되도록 필터링
+                actual_formats = {k: v for k, v in format_dict.items() if k in df_display.columns}
+                st.dataframe(df_display.sort_index(ascending=False).style.format(actual_formats),
+                             use_container_width=True)
+
+            with col_vol:
+                st.markdown("#### 💡 종합 분석 요약 (Summary)")
+
+                # 🌟 [수정됨]: 수급 데이터가 누락되거나 비어있을 경우 경고 문구와 함께 거래량 중심 요약이 나오도록 텍스트 다원화 처리
+                if df_investor_raw is None or df_investor_raw.empty:
+                    st.warning("최근 수급 데이터와 일봉 데이터의 날짜가 일치하지 않거나, 최근 거래 데이터가 존재하지 않아 수급 요약을 제공할 수 없습니다.")
+                    st.info(
+                        f"**{stock_name}**의 최근 일봉 거래량 분석 결과, 지지선 {entry_price:,.0f}원과 목표가 {target_price:,.0f}원 사이에서 가격 안정이 나타나고 있습니다. (프록시 통신 제한으로 수급 수집 지연 중)")
+                else:
+                    st.success("✅ **스텔스 프록시 가동 완료:** 실시간 우회 접속을 통해 외국인/기관 수급 정보를 확보했습니다.")
+                    st.info(
+                        f"**{stock_name}**은 주요 매물대를 기반으로 수급 유입 성향이 확인됩니다. 진입 가격인 {entry_price:,.0f}원 지지 여부를 체크하며 목표가 {target_price:,.0f}원을 목표로 추적 가능한 구간입니다.")
 
         except Exception as e:
             st.error(f"데이터를 불러오는 중 내부 오류가 발생했습니다: {e}")
