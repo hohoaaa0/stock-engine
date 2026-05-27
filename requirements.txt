@@ -5,3 +5,4 @@ finance-datareader
 plotly
 setuptools==69.5.1
 yfinance
+streamlit-aggrid
